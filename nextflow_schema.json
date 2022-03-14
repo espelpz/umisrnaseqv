@@ -59,6 +59,9 @@
                     "description": "Path to FASTA genome file.",
                     "help_text": "If you have no genome reference available, the pipeline can build one using a FASTA file. This requires additional time and resources, so it's better to use a pre-build index if possible."
                 },
+                "gff": {
+                    "type": "string"
+                },
                 "igenomes_base": {
                     "type": "string",
                     "description": "Directory / URL base for iGenomes references.",
@@ -72,6 +75,102 @@
                     "fa_icon": "fas fa-ban",
                     "hidden": true,
                     "help_text": "Do not load `igenomes.config` when running the pipeline. You may choose this option if you observe clashes between custom parameters and those supplied in `igenomes.config`."
+                }
+            }
+        },
+        "quality_control_options": {
+            "title": "Quality Control options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "skip_fastqc": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "read_trimming_options": {
+            "title": "Read trimming options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "skip_trimgalore": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "umis_filtering_options": {
+            "title": "UMIs filtering options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "skip_umisfiltering": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "new_group_1": {
+            "title": "New Group 1",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "picard_merge_dict": {
+                    "type": "string"
+                },
+                "skip_get_picard_merge_dict": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "bwa_options": {
+            "title": "BWA options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "bwa_index": {
+                    "type": "string"
+                },
+                "skip_get_bwa_index": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "variants_dectecion_options": {
+            "title": "Variants dectecion options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "bed": {
+                    "type": "string"
+                },
+                "germline": {
+                    "type": "string"
+                },
+                "af_thr": {
+                    "type": "number",
+                    "default": 1e-05
+                },
+                "normal": {
+                    "type": "string"
+                },
+                "index_mutect2": {
+                    "type": "string"
+                }
+            }
+        },
+        "variants_annotation_options": {
+            "title": "Variants annotation options",
+            "type": "object",
+            "description": "",
+            "default": "",
+            "properties": {
+                "annovar_database": {
+                    "type": "string"
                 }
             }
         },
@@ -245,6 +344,27 @@
         },
         {
             "$ref": "#/definitions/reference_genome_options"
+        },
+        {
+            "$ref": "#/definitions/quality_control_options"
+        },
+        {
+            "$ref": "#/definitions/read_trimming_options"
+        },
+        {
+            "$ref": "#/definitions/umis_filtering_options"
+        },
+        {
+            "$ref": "#/definitions/new_group_1"
+        },
+        {
+            "$ref": "#/definitions/bwa_options"
+        },
+        {
+            "$ref": "#/definitions/variants_dectecion_options"
+        },
+        {
+            "$ref": "#/definitions/variants_annotation_options"
         },
         {
             "$ref": "#/definitions/generic_options"

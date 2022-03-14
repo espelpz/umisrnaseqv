@@ -19,6 +19,9 @@ def helpMessage() {
     The typical command for running the pipeline is as follows:
 
     nextflow run nf-core/umisrnaseqv --input '*_R{1,2}.fastq.gz' -profile docker
+    nextflow run umisrnaseqv -profile conda --input 'samplesheet.csv' (../Proyectos/ctDNA/muestras_ctDNA_test/muestras_ctDNA_test_filt/samplesheet.csv)
+    nextflow run umisrnaseqv -profile conda --input ../Proyectos/ctDNA/muestras_ctDNA_test/muestras_ctDNA_test_filt/samplesheet.csv
+
 
     Mandatory arguments:
       --input [file]                  Path to input data (must be surrounded with quotes)
@@ -54,24 +57,68 @@ if (params.help) {
 }
 
 /*
- * SET UP CONFIGURATION VARIABLES
+ * VALIDATE INPUTS
  */
 
-// Check if genome exists in the config file
-if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
-    exit 1, "The provided genome '${params.genome}' is not available in the iGenomes file. Currently the available genomes are ${params.genomes.keySet().join(", ")}"
+if (params.input) { ch_input = file(params.input, checkIfExists: true) } else { exit 1, "Cannot carry out the analysis, input samplesheet file not specified!" }
+
+if (params.fasta) { ch_fasta = file(params.fasta, checkIfExists: true) } else { exit 1, "Cannot carry out the analysis, reference genome file not specified!"}
+
+if (params.bwa_index) { ch_bwa_index = Channel.fromPath( params.bwa_index, type: 'dir', checkIfExists: true ) } else {
+    if (params.skip_get_bwa_index) {
+        exit 1, "Cannot carry out the analysis! BWA index not specified! Please, provide a valid path to BWA index or don't skip BWA index obtention (skip_get_bwa_index = false)!"
+    }
 }
 
-// TODO nf-core: Add any reference files that are needed
-// Configurable reference genomes
-//
-// NOTE - THIS IS NOT USED IN THIS PIPELINE, EXAMPLE ONLY
-// If you want to use the channel below in a process, define the following:
-//   input:
-//   file fasta from ch_fasta
-//
+if (params.picard_merge_dict) { ch_dict = Channel.fromPath( params.picard_merge_dict, type: 'dir', checkIfExists: true ) } else {
+    if (params.skip_get_picard_merge_dict) {
+        exit 1, "Cannot carry out the analysis! Reference dictionary for Picard BAM merge not specified! Please, provide a valid path to reference dictionary or don't skip Reference dictionary obtention (skip_get_picard_merge_dict = false)!"
+    }
+}
+
+//ch_dict
+  //       .into { ch_picard_merge_dict
+    //             ch_mutect2_dict }
+
+if (params.index_mutect2) {ch_index_mutect2 = file(params.index_mutect2, checkIfExists: true) }
+
+if (params.bed) { ch_bed = file(params.bed, checkIfExists: true) } else { exit 1, "Cannot carry out the analysis, bed file for variants detection not specified!"}
+
+if (params.germline) { ch_germline = file(params.germline, checkIfExists: true) } else { exit 1, "Cannot carry out the analysis, germline vcf file for variants detection by Mutect2 not specified!"}
+
+if (params.normal) { ch_normal = file(params.normal, checkIfExists: true) } else { exit 1, "Cannot carry out the analysis, normal vcf file for variants detection by  Mutect2 not specified!"}
+
+if (params.annovar_database) { ch_annovar_database = Channel.fromPath( params.annovar_database, type: 'dir', checkIfExists: true ) } else { exit 1, "Cannot carry out the analysis, annovar database not specified!"}
+
+
+// Check if reference genome exists in the config file
+if (params.genomes && params.genome && !params.genomes.containsKey(params.genome)) {
+   exit 1, "The provided genome '${params.genome}' is not available in the Genome file. Currently the available genomes are ${params.genomes.keySet().join(", ")}"
+}
 params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
-if (params.fasta) { ch_fasta = file(params.fasta, checkIfExists: true) }
+params.gff = params.genome ? params.genomes[ params.genome ].gff ?: false : false
+
+//vr?
+/*
+if (params.fasta) {
+    file(params.fasta, checkIfExists: true)
+
+    lastPath = params.fasta.lastIndexOf(File.separator)
+    lastExt = params.fasta.lastIndexOf(".")
+    fasta_base = params.fasta.substring(lastPath+1)
+    index_base = params.fasta.substring(lastPath+1,lastExt)
+    if (params.fasta.endsWith('.gz')) {
+        fasta_base = params.fasta.substring(lastPath+1,lastExt)
+        index_base = fasta_base.substring(0,fasta_base.lastIndexOf("."))
+    }
+} else {
+    exit 1, "Reference genome fasta file not specified!"
+}
+*/
+
+//params.fasta = params.genome ? params.genomes[ params.genome ].fasta ?: false : false
+//if (params.fasta) { ch_fasta = file(params.fasta, checkIfExists: true) }
+
 
 // Has the run name been specified by the user?
 // this has the bonus effect of catching both -name and --name
@@ -79,6 +126,12 @@ custom_runName = params.name
 if (!(workflow.runName ==~ /[a-z]+_[a-z]+/)) {
     custom_runName = workflow.runName
 }
+
+// Stage config files
+ch_multiqc_config = file("$projectDir/assets/multiqc_config.yaml", checkIfExists: true)
+ch_multiqc_custom_config = params.multiqc_config ? Channel.fromPath(params.multiqc_config, checkIfExists: true) : Channel.empty()
+ch_output_docs = file("$projectDir/docs/output.md", checkIfExists: true)
+ch_output_docs_images = file("$projectDir/docs/images/", checkIfExists: true)
 
 // Check AWS batch settings
 if (workflow.profile.contains('awsbatch')) {
@@ -91,35 +144,6 @@ if (workflow.profile.contains('awsbatch')) {
     if (params.tracedir.startsWith('s3:')) exit 1, "Specify a local tracedir or run without trace! S3 cannot be used for tracefiles."
 }
 
-// Stage config files
-ch_multiqc_config = file("$projectDir/assets/multiqc_config.yaml", checkIfExists: true)
-ch_multiqc_custom_config = params.multiqc_config ? Channel.fromPath(params.multiqc_config, checkIfExists: true) : Channel.empty()
-ch_output_docs = file("$projectDir/docs/output.md", checkIfExists: true)
-ch_output_docs_images = file("$projectDir/docs/images/", checkIfExists: true)
-
-/*
- * Create a channel for input read files
- */
-if (params.input_paths) {
-    if (params.single_end) {
-        Channel
-            .from(params.input_paths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true) ] ] }
-            .ifEmpty { exit 1, "params.input_paths was empty - no input files supplied" }
-            .into { ch_read_files_fastqc; ch_read_files_trimming }
-    } else {
-        Channel
-            .from(params.input_paths)
-            .map { row -> [ row[0], [ file(row[1][0], checkIfExists: true), file(row[1][1], checkIfExists: true) ] ] }
-            .ifEmpty { exit 1, "params.input_paths was empty - no input files supplied" }
-            .into { ch_read_files_fastqc; ch_read_files_trimming }
-    }
-} else {
-    Channel
-        .fromFilePairs(params.input, size: params.single_end ? 1 : 2)
-        .ifEmpty { exit 1, "Cannot find any reads matching: ${params.input}\nNB: Path needs to be enclosed in quotes!\nIf this is single-end data, please specify --single_end on the command line." }
-        .into { ch_read_files_fastqc; ch_read_files_trimming }
-}
 
 // Header log info
 log.info nfcoreHeader()
@@ -158,6 +182,944 @@ log.info "-\033[2m--------------------------------------------------\033[0m-"
 // Check the hostnames against configured profiles
 checkHostname()
 
+
+///////////////////////////////////////////////////////////////////
+/*                                                               */
+/*                  UNZIP/UNTAR REFERENCE FILES                  */
+/*                                                               */
+///////////////////////////////////////////////////////////////////
+
+/*
+ * PREPROCESSING: Uncompress genome fasta file
+ */
+/*
+if (params.fasta) {
+    file(params.fasta, checkIfExists: true)
+    if (params.fasta.endsWith('.gz')) {
+        process GUNZIP_FASTA {
+            label 'error_retry'
+            if (params.save_reference) {
+                publishDir "${params.outdir}/genome", mode: params.publish_dir_mode
+            }
+
+            input:
+            path fasta from params.fasta
+
+            output:
+            path "$unzip" into ch_fasta
+
+            script:
+            unzip = fasta.toString() - '.gz'
+            """
+            pigz -f -d -p $task.cpus $fasta
+            """
+        }
+    } else {
+        ch_fasta = file(params.fasta)
+    }
+}
+*/
+
+
+
+
+/*
+ * PREPROCESSING 1: Reformat samplesheet and check validity
+ */
+
+process CHECK_SAMPLESHEET {
+
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$samplesheet"
+
+    input:
+    path samplesheet from ch_input
+
+    output:
+    path samplesheet into ch_reformat_input
+
+    script:
+    """
+    check_samplesheet.py $samplesheet
+    """
+}
+
+// Function to get list of [ sample_id, [ fastq_1, fastq_2 ], fastq_3 ]
+def validate_input(LinkedHashMap sample) {
+    
+    def sample_id = sample.sample_id
+    def fastq_1 = sample.fastq_1
+    def fastq_2 = sample.fastq_2
+    def umis = sample.umis
+
+    def array = []
+    array = [ sample_id, [ fastq_1, fastq_2 ], umis ]
+    
+    return array
+}
+
+/*
+ * Create channels for input fastq files
+ */
+ch_reformat_input
+    .splitCsv(header:true, sep:',')
+    .map { validate_input(it) }
+    .into { ch_fastqc
+            ch_trimgalore }
+
+
+/*
+ * PREPROCESSING 2: Duplicate reference genome
+ */
+
+process DUPLICATE_REF_GENOME {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$fasta"
+
+    input:
+    path fasta from ch_fasta
+
+    output:
+    path fasta into ch_fasta_bwamap,
+                    ch_fasta_bwaindex,
+                    ch_fasta_picarddict,
+                    ch_fasta_bwamapcons,
+                    ch_fasta_filtercons,
+                    ch_fasta_clipbam,
+                    ch_fasta_index_mutect2,
+                    ch_fasta_mutect2,
+                    ch_fasta_vardict
+
+    script:
+    """
+    echo $fasta
+    """
+}
+
+
+/*
+ * PREPROCESSING 3: Get adn Duplicate BWA index
+ */
+
+if (!params.bwa_index) {
+    process BWAINDEX {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$sample"
+        label 'process_high'
+        //label 'process_low'
+        publishDir "${params.outdir}/bwamap/bwaindex", mode: params.publish_dir_mode
+
+        input:
+        path fasta from ch_fasta_bwaindex
+
+        output:
+        path "index" into ch_bwa_index   
+
+        script:
+        """
+        mkdir index
+        mv $fasta ./index/reference_genome.fna
+        bwa index ./index/reference_genome.fna
+        """
+    }
+}
+
+process DUPLICATE_BWAINDEX {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$index"
+
+    input:
+    path index from ch_bwa_index
+
+    output: //
+    path index into ch_bwa_index_nocons,
+                    ch_bwa_index_cons
+
+    script:
+    """
+    echo $index
+    """
+}
+
+
+
+/*
+ * PREPROCESSING 4: Get and Duplicate Picard dictionary
+ */
+
+if (!params.picard_merge_dict) {
+    process DICT {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$dict"
+        label 'process_medium'
+        publishDir "${params.outdir}/dict", mode: params.publish_dir_mode
+
+        input:
+        path fasta from ch_fasta_picarddict
+
+        output:
+        path "*dict" into ch_dict
+
+        script:
+        """
+        picard CreateSequenceDictionary $fasta
+        """
+    }
+}
+
+process DUPLICATE_DICT {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$dict"
+
+    input:
+    path dict from ch_dict
+
+    output:
+    path dict into ch_picard_merge_dict_nocons,
+                    ch_picard_merge_dict_cons,
+                    ch_mutect2_dict
+
+    script:
+    """
+    echo $dict
+    """
+}
+
+
+/*
+ * PREPROCESSING 5: Duplicate bed file for Vardict and Mutect2 variants calling
+ */
+
+if (params.bed) {
+    process DUPLICATE_VARIANTS_BED {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$bed"
+
+        input:
+        path bed from ch_bed
+
+        output:
+        path bed into ch_mutect2_bed,
+                            ch_vardict_bed
+
+        script:
+        """
+        echo $bed
+        """
+    }
+}
+
+
+/*
+ * PREPROCESSING 6: Duplicate variants panels for Mutect2 variants calling
+ */
+ 
+process DUPLICATE_PANEL_NORMAL_MUTECT2 {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$vcf_normal"
+
+    input:
+    path vcf_normal from ch_normal
+
+    output:
+    path vcf_normal into ch_normal_index,
+                        ch_normal_vcalling
+
+    script:
+    """
+    echo $vcf_normal
+    """
+}
+
+process DUPLICATE_PANEL_GERMLINE_MUTECT2 {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$vcf_germline"
+
+    input:
+    path vcf_germline from ch_germline
+
+    output:
+    path vcf_germline into ch_germline_index,
+                        ch_germline_vcalling
+
+    script:
+    """
+    echo $vcf_germline
+    """
+}
+
+
+/*
+ * PREPROCESSING 7: Duplicate Annovar database
+ */
+
+if (params.annovar_database) {
+    process DUPLICATE_ANNOVAR_DATABASE {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$database"
+
+        input:
+        path database from ch_annovar_database
+
+        output:
+        path database into ch_annovar_mutect2_database,
+                            ch_annovar_vardict_database
+
+        script:
+        """
+        echo $database
+        """
+    }
+}
+
+
+/*
+ * STEP 1: FastQC on input reads after merging libraries from the same sample
+ */
+process FASTQC {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    //label 'process_low'
+    label 'process_medium'
+    publishDir "${params.outdir}/1_fastqc/$sample", mode: params.publish_dir_mode,
+        saveAs: { filename ->
+                      filename.endsWith(".zip") ? "zips/$filename" : filename
+                }
+
+    when:
+    !params.skip_fastqc
+
+    input:
+    tuple val(sample), path(reads), path(umis) from ch_fastqc
+
+    output:
+    path "*.{zip,html}" into ch_fastqc_raw_reports_mqc
+
+    script:
+    """
+    fastqc --quiet --threads $task.cpus $reads
+    """
+}
+
+
+/*
+ * STEP 2 - Trimgalore adapter trimming and quality filtering
+ */
+
+if (!params.skip_trimgalore_trimming) {
+    process TRIMGALORE {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$sample"
+        label 'process_medium'
+        //label 'process_low'
+        publishDir "${params.outdir}/2_trimgalore/$sample", mode: params.publish_dir_mode
+
+        input:
+        tuple val(sample), path(reads), path(umis) from ch_trimgalore
+
+        output:
+        tuple val(sample), path("*val_{1,2}.fq.gz"), path(umis) into ch_umisfiltering
+
+        script:
+
+        """
+        trim_galore --fastqc --paired --cores 4 --gzip --output_dir ./ ${reads[0]} ${reads[1]}
+        """
+    }
+
+} else {
+    ch_trimgalore
+        .into { ch_umisfiltering }
+}
+
+
+/*
+ * STEP 3 - UMIs filtering after reads adapter trimming and quality filtering
+ */
+
+/*
+if (!params.skip_umis_filtering) {
+    process UMIS_FILTERING {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$sample"
+        label 'process_medium'
+        //label 'process_low'
+        publishDir "${params.outdir}/3_umis_filtering/$sample", mode: params.publish_dir_mode,
+            saveAs: { filename ->
+                            if (filename.endsWith(".trimmed.UMIs.fastq.gz")) filename
+                    }
+
+        input:
+        tuple val(sample), path(reads), path(umis) from ch_umisfiltering
+
+        output:
+        tuple val(sample), path(reads), path("*.trimmed.UMIs.fastq.gz") into ch_fastqtobam
+
+        script:
+        """
+        keep_surviving_trimIds.Alfon.pl ${reads[1]} $umis | gzip > ${sample}.trimmed.UMIs.fastq.gz
+        """
+    }
+
+} else {
+    ch_umisfiltering
+        .into { ch_fastqtobam }
+}
+*/
+
+
+if (!params.skip_umis_filtering) {
+    process UMIS_FILTERING {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$sample"
+        label 'process_medium'
+        //label 'process_low'
+        publishDir "${params.outdir}/3_umis_filtering/$sample", mode: params.publish_dir_mode,
+            saveAs: { filename ->
+                            if (filename.endsWith(".trimmed.UMIs.fastq.gz")) filename
+                    }
+
+        input:
+        tuple val(sample), path(reads), path(umis) from ch_umisfiltering
+
+        output:
+        tuple val(sample), path(reads), path("*.trimmed.UMIs.fastq.gz") into ch_fastqtobam
+
+        script:
+        """
+        reads_1_nc=\$(echo "${reads[1]}" | rev | cut -c4- | rev)
+        umis_nc=\$(echo "$umis" | rev | cut -c4- | rev)
+        gzip -d --force ${reads[1]}
+        gzip -d --force $umis
+        keep_surviving_trimids_v2.py \$reads_1_nc \$umis_nc ${sample}.trimmed.UMIs.fastq
+        gzip ${sample}.trimmed.UMIs.fastq
+        gzip --force \$reads_1_nc
+        """
+    }
+
+} else {
+    ch_umisfiltering
+        .into { ch_fastqtobam }
+}
+
+/*
+ * STEP 4 - Fastq to Bam conversion for sorting reads
+ */
+
+process SORTFASTQTOBAM {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_medium'
+    //label 'process_low'
+    publishDir "${params.outdir}/4_sortfastqtobam/$sample", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(reads), path(umis) from ch_fastqtobam
+
+    output:
+    tuple val(sample), path("*.unmapWUMI.srt.bam") into ch_bwamap
+
+
+    script:
+    """
+    fgbio FastqToBam -i ${reads[0]} ${reads[1]} $umis -o ./${sample}.unmapWUMI.bam --read-structures +T +T 10M --sample=$sample --library=$sample
+    picard SortSam INPUT=./${sample}.unmapWUMI.bam OUTPUT=${sample}.unmapWUMI.srt.bam SORT_ORDER=queryname
+    """
+}
+
+
+/*
+ * STEP 5 - Reads mapping and UMIs merge
+ */
+
+
+// probar si funciona. este sería el bueno
+/*
+if ( !params.skip_get_bwa_index && !params.bwa_index) {
+    process BWAINDEX {
+        //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/envs_nextflow/env_umis_picasso'
+        //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/umisrnaseqv/work/conda/nf-core-umisrnaseqv-1.0dev-fa07ab28398bb031f9fc76ea12cbc91c'
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$sample"
+        //label 'process_high'
+        label 'process_low'
+        publishDir "${params.outdir}/bwaindex", mode: params.publish_dir_mode // Guardar en el publishdir SOLO? el BAM mappeado con umis (salida de último programa)
+
+        input:
+        path fasta from ch_fasta_bwaindex
+
+        output:
+        path "./" into ch_bwa_index // tengo que meter aquí el path de la carpeta en la que se crea el índice. Comprobar cuando obtenga el index del bwa index que he lanzado en picasso la organización de directorios que se crea. Este path del índice se le pasa a bwa y se le pasa concretamente el archivo fasta del genoma de referencia que se encuentre en esta carpeta (archivo finalizado en *fna). 
+                                    // poner que si no se introduce el índice bwa (el path donde se encuentran todos los ficheros del índice) entonces lo que hay que hacer es ejecutar este proceso y se mete el directorio final del proceso en el canal. (consultar proces download schema de genebygenebact porque ahí hago algo similar pero para el esquema cgMLST) 
+
+        script:
+        
+        """
+        bwa index $fasta
+        """
+    }
+}
+*/
+
+// proceso intentando crear un directorio index y cambiando al directorio para que se guarde el restulado de la ejecución de bwa index dentro de dicho directorio
+/*
+if ( !params.skip_get_bwa_index && !params.bwa_index) {
+    process BWAINDEX {
+        //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/envs_nextflow/env_umis_picasso'
+        //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/umisrnaseqv/work/conda/nf-core-umisrnaseqv-1.0dev-fa07ab28398bb031f9fc76ea12cbc91c'
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$sample"
+        //label 'process_high'
+        label 'process_low'
+        publishDir "${params.outdir}/bwaindex", mode: params.publish_dir_mode // Guardar en el publishdir SOLO? el BAM mappeado con umis (salida de último programa)
+
+        input:
+        path fasta from ch_fasta_bwaindex
+
+        output:
+        path "index" into ch_bwa_index // tengo que meter aquí el path de la carpeta en la que se crea el índice. Comprobar cuando obtenga el index del bwa index que he lanzado en picasso la organización de directorios que se crea. Este path del índice se le pasa a bwa y se le pasa concretamente el archivo fasta del genoma de referencia que se encuentre en esta carpeta (archivo finalizado en *fna). 
+                                    // poner que si no se introduce el índice bwa (el path donde se encuentran todos los ficheros del índice) entonces lo que hay que hacer es ejecutar este proceso y se mete el directorio final del proceso en el canal. (consultar proces download schema de genebygenebact porque ahí hago algo similar pero para el esquema cgMLST) 
+
+        script:
+        
+        """
+        mkdir index
+        mv $fasta ./index/${fasta}
+        cd index
+        bwa index $fasta
+        """
+    }
+}
+*/
+
+// lo mismo que antes pero sin cambiar de directorio, por si funciona así
+/*
+if (!params.bwa_index) {
+    process BWAINDEX {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$sample"
+        //label 'process_high'
+        label 'process_low'
+        publishDir "${params.outdir}/bwamap/bwaindex", mode: params.publish_dir_mode // Guardar en el publishdir SOLO? el BAM mappeado con umis (salida de último programa)
+
+        input:
+        path fasta from ch_fasta_bwaindex
+
+        output:
+        path "index" into ch_bwa_index // tengo que meter aquí el path de la carpeta en la que se crea el índice. Comprobar cuando obtenga el index del bwa index que he lanzado en picasso la organización de directorios que se crea. Este path del índice se le pasa a bwa y se le pasa concretamente el archivo fasta del genoma de referencia que se encuentre en esta carpeta (archivo finalizado en *fna). 
+                                    // poner que si no se introduce el índice bwa (el path donde se encuentran todos los ficheros del índice) entonces lo que hay que hacer es ejecutar este proceso y se mete el directorio final del proceso en el canal. (consultar proces download schema de genebygenebact porque ahí hago algo similar pero para el esquema cgMLST) 
+
+        script:
+        
+        """
+        mkdir index
+        mv $fasta ./index/reference_genome.fna
+        bwa index ./index/reference_genome.fna
+        """
+    }
+}
+*/
+
+process BWAMAP {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_high'
+    //label 'process_low'
+    publishDir "${params.outdir}/5_bwamap/$sample", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(bam), path(path_index), path(fasta), path(dict) from ch_bwamap.combine(ch_bwa_index_nocons).combine(ch_fasta_bwamap).combine(ch_picard_merge_dict_nocons)
+
+    output:
+    tuple val(sample), path("*.mappedWUMI.bam") into ch_group_reads_by_umi
+
+    script:
+    
+    """
+    picard SamToFastq I=$bam F=${sample}.unmapWUMI.srt.fq INTERLEAVE=true
+    bwa mem -p -t 8 ${path_index}/*.fasta ${sample}.unmapWUMI.srt.fq > ${sample}.mapWUMI.sam
+    picard SortSam INPUT=${sample}.mapWUMI.sam OUTPUT=${sample}.mapWUMI.srt.sam SORT_ORDER=queryname 
+    samtools view -Sb ${sample}.mapWUMI.srt.sam > ${sample}.mapWUMI.srt.bam
+    picard MergeBamAlignment UNMAPPED_BAM=$bam ALIGNED_BAM=${sample}.mapWUMI.srt.bam O=${sample}.mappedWUMI.bam R=$fasta SO=coordinate ALIGNER_PROPER_PAIR_FLAGS=true MAX_GAPS=-1 ORIENTATIONS=FR VALIDATION_STRINGENCY=SILENT CREATE_INDEX=true
+    """
+}
+
+//fasta_file=\$(*.fna || *.fasta || *.faa || *.ffn || *.frn)
+//\$fasta_file
+
+
+/*
+ * STEP 6 - Reads grouping by UMI
+ */
+
+process GROUPREADSBYUMI {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_medium'
+    publishDir "${params.outdir}/6_groupreadsbyumi/$sample", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(bam) from ch_group_reads_by_umi
+
+    output:
+    tuple val(sample), path("*.mapWUMI.gbu.bam") into ch_call_molecular_consensus
+
+    script:
+    
+    """
+    mkdir logs
+    fgbio GroupReadsByUmi -s Adjacency -i $bam -o ${sample}.mapWUMI.gbu.bam -f ${sample}.mappedWUMI.gbu.hist.txt > logs/${sample}.GroupReadsByUmi.out 2>logs/${sample}.GroupReadsByUmi.err
+    """
+}
+
+
+/*
+ * STEP 7 - Get Molecular Consensus for every read set grouped by UMIs
+ */
+
+process CALLMOLECULARCONSENSUS {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_medium'
+    publishDir "${params.outdir}/7_callmolecularconsensus/$sample", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(bam) from ch_call_molecular_consensus
+
+    output:
+    tuple val(sample), path("*.mappedWUMI.gbu.cons_unmap.bam") into ch_bwamap_cons
+
+    script:
+    
+    """
+    mkdir logs    
+    fgbio CallMolecularConsensusReads --input $bam --output ${sample}.mappedWUMI.gbu.cons_unmap.bam --min-reads=1 --reject ${sample}.mappedWUMI.gbu.cons_rej.bam  > logs/${sample}_CallMolecularConsensusReads.out 2>logs/${sample}_CallMolecularConsensusReads.error
+    """
+}
+
+
+/*
+ * STEP 8 - Consensus reads mapping and UMIs merge
+ */
+
+process BWAMAPCONS {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_high'
+    publishDir "${params.outdir}/8_bwamapcons/$sample", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(bam), path(path_index), path(fasta), path(dict) from ch_bwamap_cons.combine(ch_bwa_index_cons).combine(ch_fasta_bwamapcons).combine(ch_picard_merge_dict_cons)
+
+    output:
+    tuple val(sample), path("*.mappedWUMI.gbu.bam") into ch_filtercons
+
+    script:
+    """
+    picard SamToFastq RGT=A I=$bam F=${sample}.mapWUMI.gbu.fq INTERLEAVE=true
+    bwa mem -p -t 8 ${path_index}/*.fasta ${sample}.mapWUMI.gbu.fq > ${sample}.mapWUMI.gbu.sam    
+    picard SortSam INPUT=${sample}.mapWUMI.gbu.sam OUTPUT=${sample}.mapWUMI.gbu.srt.sam SORT_ORDER=queryname
+    samtools view -Sb ${sample}.mapWUMI.gbu.srt.sam > ${sample}.mapWUMI.gbu.srt.bam
+    picard MergeBamAlignment UNMAPPED_BAM=$bam ALIGNED_BAM=${sample}.mapWUMI.gbu.srt.bam O=${sample}.mappedWUMI.gbu.bam R=$fasta SO=coordinate ALIGNER_PROPER_PAIR_FLAGS=true MAX_GAPS=-1 ORIENTATIONS=FR VALIDATION_STRINGENCY=SILENT CREATE_INDEX=true    
+    """
+}
+
+
+/*
+ * STEP 9 - Consensus reads filtering
+ */
+
+process FILTERCONS {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_medium'
+    publishDir "${params.outdir}/9_filtercons/$sample", mode: params.publish_dir_mode
+    
+    input:
+    tuple val(sample), path(bam), path(fasta) from ch_filtercons.combine(ch_fasta_filtercons)
+
+    output: 
+    tuple val(sample), path("*.mappedWUMI.FCons.min2.bam") into ch_clipbam
+
+    script:
+    """
+    mkdir logs
+    fgbio FilterConsensusReads  -M 2 -N 30 -i $bam -o ${sample}.mappedWUMI.FCons.min2.bam -r $fasta > logs/${sample}.FilterConsensusReads.min2.out 2> logs/${sample}.FilterConsensusReads.min2.err
+    """
+}
+
+
+/*
+ * STEP 10 - Overlapping reads filtering
+ */
+
+process CLIPBAM {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_medium'
+    publishDir "${params.outdir}/10_clipbam/$sample", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(bam), path(fasta) from ch_clipbam.combine(ch_fasta_clipbam)
+
+    output:
+    tuple val(sample), path("*.mappedWUMI.FCons.min2.clip.bam") into ch_mutect2, 
+                                                                        ch_vardict
+    script:
+    """
+    mkdir logs
+    fgbio ClipBam -Xmx32000M --clip-overlapping-reads -i $bam -o ${sample}.mappedWUMI.FCons.min2.clip.bam -m ${sample}.mappedWUMI.FCons.min2.clip.metrics.txt -r $fasta > logs/${sample}.ClipBam.out 2> logs/${sample}.ClipBam.err
+    """
+}
+
+
+/*
+ * STEP 11 - Mutect2 Variants Calling
+ */
+
+if (!params.index_mutect2) {
+    process INDEX_MUTECT2 {
+        conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+        tag "$sample"
+        label 'process_medium'
+        publishDir "${params.outdir}/11_mutect2/index_mutect2", mode: params.publish_dir_mode
+
+        input:
+        path fasta from ch_fasta_index_mutect2
+
+        output:
+        tuple val(sample), path("*fai") into ch_index_mutect2
+
+        script:
+        """
+        ref=\$(echo "$fasta" | rev | cut -c4- | rev)
+        gzip -d $fasta
+        samtools faidx \$ref
+        """
+    }
+}
+
+process PANEL_NORMAL_INDEX_MUTECT2 {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_medium'
+    publishDir "${params.outdir}/11_mutect2/index_mutect2", mode: params.publish_dir_mode
+
+    input:
+    path vcf_normal from ch_normal_index
+
+    output:
+    path "*.tbi" into ch_normal_index_vcalling 
+    
+    script:
+    
+    """
+    gatk IndexFeatureFile -I $vcf_normal
+    """
+}
+
+process PANEL_GERMLINE_INDEX_MUTECT2 {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_medium'
+    publishDir "${params.outdir}/11_mutect2/index_mutect2", mode: params.publish_dir_mode
+
+    input:
+    path vcf_germline from ch_germline_index
+
+    output:
+    path "*.tbi" into ch_germline_index_vcalling 
+    
+    script:
+    
+    """
+    gatk IndexFeatureFile -I $vcf_germline
+    """
+}
+
+
+process MUTECT2 {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_high'
+    publishDir "${params.outdir}/11_mutect2/$sample", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(bam), path(fasta), path(bed), path(vcf_germline), path(vcf_normal), path(vcf_germline_index), path(vcf_normal_index), path(dict) from ch_mutect2.combine(ch_fasta_mutect2).combine(ch_mutect2_bed).combine(ch_germline_vcalling).combine(ch_normal_vcalling).combine(ch_germline_index_vcalling).combine(ch_normal_index_vcalling).combine(ch_mutect2_dict)
+    //path fasta from ch_fasta_mutect2
+    path index from ch_index_mutect2
+    //path bed from ch_mutect2_bed
+    //path vcf_germline from ch_germline_vcalling
+    //path vcf_normal from ch_normal_vcalling
+    //path vcf_germline_index from ch_germline_index_vcalling
+    //path vcf_normal_index from ch_normal_index_vcalling
+    //path dict from ch_mutect2_dict
+
+    output:
+    tuple val(sample), path("*.min2.clip.vcf.gz") into ch_mutect2_annovar
+
+    script:
+    
+    """
+    mkdir logs
+    gatk Mutect2 -R $fasta -I $bam -L $bed --germline-resource $vcf_germline --panel-of-normals $vcf_normal -O ${sample}.min2.clip.vcf.gz > logs/${sample}.mutect.min2.clip.out 2> logs/${sample}.mutect.min2.clip.err
+    """
+}
+
+
+/*
+ * STEP 12 - Vardict Variants Calling
+ */
+
+/*
+process VARDICT {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_high'
+    publishDir "${params.outdir}/12_vardict/$sample", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(bam), path(fasta), path(bed) from ch_vardict.combine(ch_fasta_vardict).combine(ch_vardict_bed)
+
+    output:
+    tuple val(sample), path("*.min2.clip.vcf.gz") into ch_vardict_annovar
+
+    script:
+    
+    """
+    vardict -G $fasta -f $params.af_thr -N $sample -b $bam -c 1 -S 2 -E 3 -g 5 $bed | teststrandbias.R | var2vcf_valid.pl -N $sample -E -f $params.af_thr
+    """
+}
+*/
+
+
+/*
+ * STEP 13 - Variants Annotations
+ */
+
+// ANOTACIÓN DE VARIANTES DETECTADAS CON MUTECT2 UTILIZANDO ANNOVAR //
+process ANNOVAR_MUTECT2 {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_high'
+    publishDir "${params.outdir}/13_annovar/$sample/annot_mutect2", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(variants), path(database) from ch_mutect2_annovar.combine(ch_annovar_mutect2_database)
+
+    output:
+    tuple val(sample), path("*.txt") into ch_mutect2_annotations
+    
+    script:
+    """
+    table_annovar.pl $variants $database -buildver hg38 -out ${sample}.mutect2-anno-cos95.ensGene -remove -nastring . -protocol ensGene,cosmic95,tcgaBRCA,tcgaALL -operation g,f,f,f -vcfinput
+    """
+}
+
+// ANOTACIÓN DE VARIANTES DETECTADAS CON VARDICT UTILIZANDO ANNOVAR //
+/*
+process ANNOVAR_VARDICT  {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_high'
+    publishDir "${params.outdir}/13_annovar/$sample/annot_vardict", mode: params.publish_dir_mode
+
+    input:
+    tuple val(sample), path(variants), path(database) from ch_vardict_annovar.combine(ch_annovar_vardict_database)
+
+    output:
+    tuple val(sample), path("*.txt") into ch_vardict_annotations
+    
+    script:
+    """
+    table_annovar.pl $variants $database -buildver hg38 -out ${sample}.vardict-anno-cos95.ensGene -remove -nastring . -protocol ensGene,cosmic95,tcgaBRCA,tcgaALL -operation g,f,f,f -vcfinput
+    """
+}
+*/
+
+
+/*
+ * STEP 14 - Get Final Annotated Variants Report
+ */
+
+// DUDA PATH EN COMANDO.
+// EN VARDICT HABRÍA QUE USAR UN MODO DE FILTRADO DIFERENTE PORQUE EL VCF/TXT OBTENIDO DE VARDICT SERÁ DISTINTO AL DE MUTECT2?
+
+
+process FINAL_VARIANTS_REPORT_ANNOMUTECT2 {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_low'
+    publishDir "${params.outdir}/14_finalreport/anno_mutect2", mode: params.publish_dir_mode
+
+    input:
+    path(annotations) from ch_mutect2_annotations.map { it[1] }.collect()
+
+    output:
+    path "annomutect2_ALLsams_inCOMSandTCGA.v2.txt" into ch_final_report_annomutect2
+
+    script:
+    
+    """
+    mkdir all_annoations
+    mv $annotations all_annotations
+    files=(datos_prueba/*)
+    
+    (printf "Sample\t";head -1 \$files|  perl -nae 'chomp;@G = split "\t"; @H = split ":" ,\$G[-1];@I = split ",", \$H[1];print "\$G[0]\t\$G[1]\t\$G[2]\t\$G[3]\t\$G[4]\t\$G[5]\t\$G[6]\t\$G[7]\t\$G[8]\t\$G[9]\t\$G[10]\t\$G[11]\t\$G[12]\tVAF\tDP\tREF_AD\tMUT_AD\n"' ;for i in \$(all_annoations); do j=`basename \$i`;k=`basename -s .mutect2-anno-cos95.ensGene.hg38_multianno.txt \$j`;export k;cat \$i | perl -nae 'next if /^Chr/;chomp;@G = split "\t"; @H = split ":" ,\$G[-1];@I = split ",", \$H[1];print "\$ENV{\"k\"}\t\$G[0]\t\$G[1]\t\$G[2]\t\$G[3]\t\$G[4]\t\$G[5]\t\$G[6]\t\$G[7]\t\$G[8]\t\$G[9]\t\$G[10]\t\$G[11]\t\$G[12]\t\$H[2]\t\$H[3]\t\$I[0]\t\$I[1]\n" if (\$G[11] ne "." or \$G[12] ne ".")' ; done ) >> annomutect2_ALLsams_inCOMSandTCGA.v2.txt
+    """
+}
+//     (printf "Sample\t";head -1 \$files|  perl -nae 'chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\tVAF\tDP\tREF_AD\tMUT_AD\n"' ;for i in \$(all_annoations); do j=`basename $i`;k=`basename -s .mutect2-anno-cos95.ensGene.hg38_multianno.txt $j`;export k;cat $i | perl -nae 'next if /^Chr/;chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$ENV{\"k\"}\t$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\t$H[2]\t$H[3]\t$I[0]\t$I[1]\n" if ($G[11] ne "." or $G[12] ne ".")' ; done ) >> annomutect2_ALLsams_inCOMSandTCGA.v2.txt
+
+//cd /home/gcarbajosa/Projects/LiquidBiopsy/ctDNA/scripts
+
+//(printf "Sample\t";head -1 ../analysis/annovar/102MS-2.min2.clip.vcf.filt.gz.anno-cos95.ensGene.hg38_multianno.txt|  perl -nae 'chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\tVAF\tDP\tREF_AD\tMUT_AD\n"' ;for i in  $(find ../analysis/annovar/ -name *min2.clip.vcf.filt.gz.anno-cos95.ensGene.hg38_multianno.txt); do j=`basename $i`;k=`basename -s .min2.clip.vcf.filt.gz.anno-cos95.ensGene.hg38_multianno.txt $j`;export k;cat $i | perl -nae 'next if /^Chr/;chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$ENV{\"k\"}\t$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\t$H[2]\t$H[3]\t$I[0]\t$I[1]\n" if ($G[11] ne "." or $G[12] ne ".")' ; done ) > ../analysis/annovar/summaries/varanno_ALLsams_inCOMSandTCGA_master.txt
+
+//(printf "Sample\t";head -1 ../analysis/annovar/102MS-2.min2.clip.vcf.filt.gz.anno-cos95.ensGene.hg38_multianno.txt|  perl -nae 'chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\tVAF\tDP\tREF_AD\tMUT_AD\n"' ;for i in  $(find ../analysis/annovar/ -name *min2.clip.vcf.filt.gz.anno-cos95.ensGene.hg38_multianno.txt); do j=`basename $i`;k=`basename -s .min2.clip.vcf.filt.gz.anno-cos95.ensGene.hg38_multianno.txt $j`;export k;cat $i | perl -nae 'next if /^Chr/;chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$ENV{\"k\"}\t$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\t$H[2]\t$H[3]\t$I[0]\t$I[1]\n" if ($G[11] ne "." or $G[12] ne ".")' ; done ) >> ../analysis/annovar/summaries/varanno_ALLsams_inCOMSandTCGA_master.v2.txt
+
+/*
+process FINAL_VARIANTS_REPORT_ANNOVARDICT {
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
+    tag "$sample"
+    label 'process_low'
+    publishDir "${params.outdir}/14_finalreport/anno_vardict", mode: params.publish_dir_mode
+
+    input:
+    path(annotations) from ch_vardict_annotations.map { it[1] }.collect()
+
+    output:
+    path "annovardict_ALLsams_inCOMSandTCGA.v2.txt" into ch_final_report_annovardict
+
+    script:
+    
+    """
+    mkdir all_annoations
+    mv $annotations all_annotations
+    files=(datos_prueba/*)
+    
+    (printf "Sample\t";head -1 \$files|  perl -nae 'chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\tVAF\tDP\tREF_AD\tMUT_AD\n"'; for i in $(all_annoations); do j=`basename $i`;k=`basename -s .min2.clip.vcf.filt.gz.anno-cos95.ensGene.hg38_multianno.txt $j`;export k;cat $i | perl -nae 'next if /^Chr/;chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$ENV{\"k\"}\t$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\t$H[2]\t$H[3]\t$I[0]\t$I[1]\n" if ($G[11] ne "." or $G[12] ne ".")' ; done ) >> annovardict_ALLsams_inCOMSandTCGA.v2.txt
+    """
+}
+*/
+
+//incluir un canal? -->
+// orden: sam2fqBWAMergeCONS --> 1. CollectAlignmentSummaryMetrics y 2. CollectSequencingArtifactMetrics --> FilterConsensusReads --> 3. CollectWgsMetricsWithNonZeroCoverage y 4. DepthOfCoverage
+
+/*
+gatk CollectAlignmentSummaryMetrics -I ../analysis/consensusAligned/${sam}.mappedWUMI.v3.bam  -R /mnt/lustre/groups/hodgkinsonlab/gcarbajo/annotation/hsapiens/hg38/GCA_000001405.15/GRCh38_no_alt_analysis_set_GCA_000001405.15.fasta.gz -H ../analysis/consensusAlignedMetrics/${sam}.mappedWUMI.v3.hist.pdf -O ../analysis/consensusAlignedMetrics/${sam}.mappedWUMI.v3.metrics.txt
+Using GATK jar /mnt/lustre/groups/hodgkinsonlab/gcarbajo/src/gatk-4.2.0.0/gatk-package-4.2.0.0-local.jar
+
+
+gatk CollectSequencingArtifactMetrics -I ../analysis/consensusAligned/${sam}.mappedWUMI.v3.bam  -R /mnt/lustre/groups/hodgkinsonlab/gcarbajo/annotation/hsapiens/hg38/GCA_000001405.15/GRCh38_no_alt_analysis_set_GCA_000001405.15.fasta.gz  -O ../analysis/CollectSequencingArtifactMetrics/${sam}.mappedWUMI.v3.SAFmetrics.txt
+
+
+gatk CollectWgsMetricsWithNonZeroCoverage -R /mnt/lustre/groups/hodgkinsonlab/gcarbajo/annotation/hsapiens/hg38/GCA_000001405.15/GRCh38_no_alt_analysis_set_GCA_000001405.15.fasta.gz -I ../analysis/FilterConsensusReads/${sam}.mappedWUMI.v3.FCons.min3.bam -O ../analysis/CollectWgsMetricsWithNonZeroCoverage/${sam}.collect_wgs_metrics.txt -CHART ../analysis/CollectWgsMetricsWithNonZeroCoverage/${sam}.collect_wgs_metrics.pdf --INCLUDE_BQ_HISTOGRAM true --INTERVALS ../data/bed_files/3241881_Covered.v3.bed
+
+gatk DepthOfCoverage -I ../analysis/FilterConsensusReads/${sam}.mappedWUMI.v3.FCons.min2.bam -R /mnt/lustre/groups/hodgkinsonlab/gcarbajo/annotation/hsapiens/hg38/GCA_000001405.15/GRCh38_no_alt_analysis_set_GCA_000001405.15.fasta -L ../data/bed_files/list.interval_list -O ../analysis/DepthOfCoverage/${sam}.DepthOfCoverage.min2.txt
+gatk DepthOfCoverage -I ../analysis/FilterConsensusReads/${sam}.mappedWUMI.v3.FCons.min3.bam -R /mnt/lustre/groups/hodgkinsonlab/gcarbajo/annotation/hsapiens/hg38/GCA_000001405.15/GRCh38_no_alt_analysis_set_GCA_000001405.15.fasta -L ../data/bed_files/list.interval_list -O ../analysis/DepthOfCoverage/${sam}.DepthOfCoverage.min3.txt
+
+*/
+
+
 Channel.from(summary.collect{ [it.key, it.value] })
     .map { k,v -> "<dt>$k</dt><dd><samp>${v ?: '<span style=\"color:#999999;\">N/A</a>'}</samp></dd>" }
     .reduce { a, b -> return [a, b].join("\n            ") }
@@ -178,6 +1140,9 @@ Channel.from(summary.collect{ [it.key, it.value] })
  * Parse software version numbers
  */
 process get_software_versions {
+    //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/envs_nextflow/env_umis_picasso'
+    //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/umisrnaseqv/work/conda/nf-core-umisrnaseqv-1.0dev-fa07ab28398bb031f9fc76ea12cbc91c'
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
     publishDir "${params.outdir}/pipeline_info", mode: params.publish_dir_mode,
         saveAs: { filename ->
                       if (filename.indexOf(".csv") > 0) filename
@@ -199,33 +1164,17 @@ process get_software_versions {
     """
 }
 
-/*
- * STEP 1 - FastQC
- */
-process fastqc {
-    tag "$name"
-    label 'process_medium'
-    publishDir "${params.outdir}/fastqc", mode: params.publish_dir_mode,
-        saveAs: { filename ->
-                      filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"
-                }
 
-    input:
-    set val(name), file(reads) from ch_read_files_fastqc
-
-    output:
-    file "*_fastqc.{zip,html}" into ch_fastqc_results
-
-    script:
-    """
-    fastqc --quiet --threads $task.cpus $reads
-    """
-}
 
 /*
- * STEP 2 - MultiQC
+ * STEP X - MultiQC
  */
+
+/*
 process multiqc {
+    //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/envs_nextflow/env_umis_picasso'
+    //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/umisrnaseqv/work/conda/nf-core-umisrnaseqv-1.0dev-fa07ab28398bb031f9fc76ea12cbc91c'
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
     publishDir "${params.outdir}/MultiQC", mode: params.publish_dir_mode
 
     input:
@@ -250,11 +1199,16 @@ process multiqc {
     multiqc -f $rtitle $rfilename $custom_config_file .
     """
 }
+*/
 
 /*
- * STEP 3 - Output Description HTML
+ * STEP Y - Output Description HTML
  */
+/*
 process output_documentation {
+    //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/envs_nextflow/env_umis_picasso'
+    //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/umisrnaseqv/work/conda/nf-core-umisrnaseqv-1.0dev-fa07ab28398bb031f9fc76ea12cbc91c'
+    conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
     publishDir "${params.outdir}/pipeline_info", mode: params.publish_dir_mode
 
     input:
@@ -269,6 +1223,7 @@ process output_documentation {
     markdown_to_html.py $output_docs -o results_description.html
     """
 }
+*/
 
 /*
  * Completion e-mail notification
