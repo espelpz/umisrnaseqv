@@ -76,10 +76,6 @@ if (params.picard_merge_dict) { ch_dict = Channel.fromPath( params.picard_merge_
     }
 }
 
-//ch_dict
-  //       .into { ch_picard_merge_dict
-    //             ch_mutect2_dict }
-
 if (params.index_mutect2) {ch_index_mutect2 = file(params.index_mutect2, checkIfExists: true) }
 
 if (params.bed) { ch_bed = file(params.bed, checkIfExists: true) } else { exit 1, "Cannot carry out the analysis, bed file for variants detection not specified!"}
@@ -537,7 +533,6 @@ if (!params.skip_trimgalore_trimming) {
  * STEP 3 - UMIs filtering after reads adapter trimming and quality filtering
  */
 
-/*
 if (!params.skip_umis_filtering) {
     process UMIS_FILTERING {
         conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
@@ -565,9 +560,9 @@ if (!params.skip_umis_filtering) {
     ch_umisfiltering
         .into { ch_fastqtobam }
 }
-*/
 
 
+/*
 if (!params.skip_umis_filtering) {
     process UMIS_FILTERING {
         conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
@@ -601,6 +596,7 @@ if (!params.skip_umis_filtering) {
     ch_umisfiltering
         .into { ch_fastqtobam }
 }
+*/
 
 /*
  * STEP 4 - Fastq to Bam conversion for sorting reads
@@ -632,28 +628,22 @@ process SORTFASTQTOBAM {
  * STEP 5 - Reads mapping and UMIs merge
  */
 
-
-// probar si funciona. este sería el bueno
 /*
 if ( !params.skip_get_bwa_index && !params.bwa_index) {
     process BWAINDEX {
-        //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/envs_nextflow/env_umis_picasso'
-        //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/umisrnaseqv/work/conda/nf-core-umisrnaseqv-1.0dev-fa07ab28398bb031f9fc76ea12cbc91c'
         conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
         tag "$sample"
         //label 'process_high'
         label 'process_low'
-        publishDir "${params.outdir}/bwaindex", mode: params.publish_dir_mode // Guardar en el publishdir SOLO? el BAM mappeado con umis (salida de último programa)
+        publishDir "${params.outdir}/bwaindex", mode: params.publish_dir_mode
 
         input:
         path fasta from ch_fasta_bwaindex
 
         output:
-        path "./" into ch_bwa_index // tengo que meter aquí el path de la carpeta en la que se crea el índice. Comprobar cuando obtenga el index del bwa index que he lanzado en picasso la organización de directorios que se crea. Este path del índice se le pasa a bwa y se le pasa concretamente el archivo fasta del genoma de referencia que se encuentre en esta carpeta (archivo finalizado en *fna). 
-                                    // poner que si no se introduce el índice bwa (el path donde se encuentran todos los ficheros del índice) entonces lo que hay que hacer es ejecutar este proceso y se mete el directorio final del proceso en el canal. (consultar proces download schema de genebygenebact porque ahí hago algo similar pero para el esquema cgMLST) 
+        path "./" into ch_bwa_index   
 
         script:
-        
         """
         bwa index $fasta
         """
@@ -661,24 +651,21 @@ if ( !params.skip_get_bwa_index && !params.bwa_index) {
 }
 */
 
-// proceso intentando crear un directorio index y cambiando al directorio para que se guarde el restulado de la ejecución de bwa index dentro de dicho directorio
+
 /*
-if ( !params.skip_get_bwa_index && !params.bwa_index) {
+if ( !params.bwa_index) {
     process BWAINDEX {
-        //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/envs_nextflow/env_umis_picasso'
-        //conda '/mnt/home/users/b02_cimes_uma/elpz/programas/programas_dev/umisrnaseqv/work/conda/nf-core-umisrnaseqv-1.0dev-fa07ab28398bb031f9fc76ea12cbc91c'
         conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
         tag "$sample"
         //label 'process_high'
         label 'process_low'
-        publishDir "${params.outdir}/bwaindex", mode: params.publish_dir_mode // Guardar en el publishdir SOLO? el BAM mappeado con umis (salida de último programa)
+        publishDir "${params.outdir}/bwaindex", mode: params.publish_dir_mode
 
         input:
         path fasta from ch_fasta_bwaindex
 
         output:
-        path "index" into ch_bwa_index // tengo que meter aquí el path de la carpeta en la que se crea el índice. Comprobar cuando obtenga el index del bwa index que he lanzado en picasso la organización de directorios que se crea. Este path del índice se le pasa a bwa y se le pasa concretamente el archivo fasta del genoma de referencia que se encuentre en esta carpeta (archivo finalizado en *fna). 
-                                    // poner que si no se introduce el índice bwa (el path donde se encuentran todos los ficheros del índice) entonces lo que hay que hacer es ejecutar este proceso y se mete el directorio final del proceso en el canal. (consultar proces download schema de genebygenebact porque ahí hago algo similar pero para el esquema cgMLST) 
+        path "index" into ch_bwa_index   
 
         script:
         
@@ -692,7 +679,6 @@ if ( !params.skip_get_bwa_index && !params.bwa_index) {
 }
 */
 
-// lo mismo que antes pero sin cambiar de directorio, por si funciona así
 /*
 if (!params.bwa_index) {
     process BWAINDEX {
@@ -700,14 +686,13 @@ if (!params.bwa_index) {
         tag "$sample"
         //label 'process_high'
         label 'process_low'
-        publishDir "${params.outdir}/bwamap/bwaindex", mode: params.publish_dir_mode // Guardar en el publishdir SOLO? el BAM mappeado con umis (salida de último programa)
+        publishDir "${params.outdir}/bwamap/bwaindex", mode: params.publish_dir_mode
 
         input:
         path fasta from ch_fasta_bwaindex
 
         output:
-        path "index" into ch_bwa_index // tengo que meter aquí el path de la carpeta en la que se crea el índice. Comprobar cuando obtenga el index del bwa index que he lanzado en picasso la organización de directorios que se crea. Este path del índice se le pasa a bwa y se le pasa concretamente el archivo fasta del genoma de referencia que se encuentre en esta carpeta (archivo finalizado en *fna). 
-                                    // poner que si no se introduce el índice bwa (el path donde se encuentran todos los ficheros del índice) entonces lo que hay que hacer es ejecutar este proceso y se mete el directorio final del proceso en el canal. (consultar proces download schema de genebygenebact porque ahí hago algo similar pero para el esquema cgMLST) 
+        path "index" into ch_bwa_index   
 
         script:
         
@@ -743,9 +728,6 @@ process BWAMAP {
     picard MergeBamAlignment UNMAPPED_BAM=$bam ALIGNED_BAM=${sample}.mapWUMI.srt.bam O=${sample}.mappedWUMI.bam R=$fasta SO=coordinate ALIGNER_PROPER_PAIR_FLAGS=true MAX_GAPS=-1 ORIENTATIONS=FR VALIDATION_STRINGENCY=SILENT CREATE_INDEX=true
     """
 }
-
-//fasta_file=\$(*.fna || *.fasta || *.faa || *.ffn || *.frn)
-//\$fasta_file
 
 
 /*
@@ -1042,10 +1024,7 @@ process ANNOVAR_VARDICT  {
  * STEP 14 - Get Final Annotated Variants Report
  */
 
-// DUDA PATH EN COMANDO.
-// EN VARDICT HABRÍA QUE USAR UN MODO DE FILTRADO DIFERENTE PORQUE EL VCF/TXT OBTENIDO DE VARDICT SERÁ DISTINTO AL DE MUTECT2?
-
-
+/*
 process FINAL_VARIANTS_REPORT_ANNOMUTECT2 {
     conda '/mnt/home/users/b02_cimes_uma/elpz/.conda/envs/env_umis_picasso'
     tag "$sample"
@@ -1061,13 +1040,15 @@ process FINAL_VARIANTS_REPORT_ANNOMUTECT2 {
     script:
     
     """
-    mkdir all_annoations
+    mkdir all_annotations
     mv $annotations all_annotations
-    files=(datos_prueba/*)
+    files=(all_annotations/*)
     
     (printf "Sample\t";head -1 \$files|  perl -nae 'chomp;@G = split "\t"; @H = split ":" ,\$G[-1];@I = split ",", \$H[1];print "\$G[0]\t\$G[1]\t\$G[2]\t\$G[3]\t\$G[4]\t\$G[5]\t\$G[6]\t\$G[7]\t\$G[8]\t\$G[9]\t\$G[10]\t\$G[11]\t\$G[12]\tVAF\tDP\tREF_AD\tMUT_AD\n"' ;for i in \$(all_annoations); do j=`basename \$i`;k=`basename -s .mutect2-anno-cos95.ensGene.hg38_multianno.txt \$j`;export k;cat \$i | perl -nae 'next if /^Chr/;chomp;@G = split "\t"; @H = split ":" ,\$G[-1];@I = split ",", \$H[1];print "\$ENV{\"k\"}\t\$G[0]\t\$G[1]\t\$G[2]\t\$G[3]\t\$G[4]\t\$G[5]\t\$G[6]\t\$G[7]\t\$G[8]\t\$G[9]\t\$G[10]\t\$G[11]\t\$G[12]\t\$H[2]\t\$H[3]\t\$I[0]\t\$I[1]\n" if (\$G[11] ne "." or \$G[12] ne ".")' ; done ) >> annomutect2_ALLsams_inCOMSandTCGA.v2.txt
     """
 }
+*/
+
 //     (printf "Sample\t";head -1 \$files|  perl -nae 'chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\tVAF\tDP\tREF_AD\tMUT_AD\n"' ;for i in \$(all_annoations); do j=`basename $i`;k=`basename -s .mutect2-anno-cos95.ensGene.hg38_multianno.txt $j`;export k;cat $i | perl -nae 'next if /^Chr/;chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$ENV{\"k\"}\t$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\t$H[2]\t$H[3]\t$I[0]\t$I[1]\n" if ($G[11] ne "." or $G[12] ne ".")' ; done ) >> annomutect2_ALLsams_inCOMSandTCGA.v2.txt
 
 //cd /home/gcarbajosa/Projects/LiquidBiopsy/ctDNA/scripts
@@ -1092,9 +1073,9 @@ process FINAL_VARIANTS_REPORT_ANNOVARDICT {
     script:
     
     """
-    mkdir all_annoations
+    mkdir all_annotations
     mv $annotations all_annotations
-    files=(datos_prueba/*)
+    files=(all_annotations/*)
     
     (printf "Sample\t";head -1 \$files|  perl -nae 'chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\tVAF\tDP\tREF_AD\tMUT_AD\n"'; for i in $(all_annoations); do j=`basename $i`;k=`basename -s .min2.clip.vcf.filt.gz.anno-cos95.ensGene.hg38_multianno.txt $j`;export k;cat $i | perl -nae 'next if /^Chr/;chomp;@G = split "\t"; @H = split ":" ,$G[-1];@I = split ",", $H[1];print "$ENV{\"k\"}\t$G[0]\t$G[1]\t$G[2]\t$G[3]\t$G[4]\t$G[5]\t$G[6]\t$G[7]\t$G[8]\t$G[9]\t$G[10]\t$G[11]\t$G[12]\t$H[2]\t$H[3]\t$I[0]\t$I[1]\n" if ($G[11] ne "." or $G[12] ne ".")' ; done ) >> annovardict_ALLsams_inCOMSandTCGA.v2.txt
     """
